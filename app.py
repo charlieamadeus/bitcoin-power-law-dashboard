@@ -188,8 +188,19 @@ if len(df) >= 10:
     recent_data = df.tail(10)[['BTC_USD', 'Gold_USD', 'BTC_in_Gold', 'Days']].copy()
     
     # Create a clean dataframe for display with proper data types
+    try:
+        # Try to format dates properly
+        if hasattr(recent_data.index, 'strftime'):
+            date_strings = recent_data.index.strftime('%Y-%m-%d')
+        else:
+            # Fallback for different index types
+            date_strings = [str(date)[:10] for date in recent_data.index]
+    except:
+        # Final fallback - use index as is but convert to string
+        date_strings = [str(date) for date in recent_data.index]
+    
     display_data = pd.DataFrame({
-        'Date': recent_data.index.strftime('%Y-%m-%d'),
+        'Date': date_strings,
         'BTC (USD)': [f"${x:,.0f}" for x in recent_data['BTC_USD']],
         'Gold (USD/oz)': [f"${x:,.2f}" for x in recent_data['Gold_USD']],
         'BTC in Gold oz': [f"{x:.3f}" for x in recent_data['BTC_in_Gold']],
@@ -197,6 +208,17 @@ if len(df) >= 10:
     })
     
     st.dataframe(display_data, use_container_width=True)
+else:
+    st.subheader('Current Data Point')
+    # Show just the current values if we don't have enough historical data
+    current_data = pd.DataFrame({
+        'Date': [datetime.now().strftime('%Y-%m-%d')],
+        'BTC (USD)': [f"${current_btc_usd:,.0f}"],
+        'Gold (USD/oz)': [f"${current_gold_usd:,.2f}"],
+        'BTC in Gold oz': [f"{current_btc_gold:.3f}"],
+        'Days Since Genesis': [f"{current_days:,}"]
+    })
+    st.dataframe(current_data, use_container_width=True)
 
 # Explanation
 st.markdown("""
