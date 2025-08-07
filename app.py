@@ -186,10 +186,17 @@ st.write(f"""
 if len(df) >= 10:
     st.subheader('Recent Data')
     recent_data = df.tail(10)[['BTC_USD', 'Gold_USD', 'BTC_in_Gold', 'Days']].copy()
-    recent_data['BTC_USD'] = recent_data['BTC_USD'].apply(lambda x: f"${x:,.0f}")
-    recent_data['Gold_USD'] = recent_data['Gold_USD'].apply(lambda x: f"${x:,.2f}")
-    recent_data['BTC_in_Gold'] = recent_data['BTC_in_Gold'].apply(lambda x: f"{x:.3f}")
-    st.dataframe(recent_data)
+    
+    # Create a clean dataframe for display with proper data types
+    display_data = pd.DataFrame({
+        'Date': recent_data.index.strftime('%Y-%m-%d'),
+        'BTC (USD)': [f"${x:,.0f}" for x in recent_data['BTC_USD']],
+        'Gold (USD/oz)': [f"${x:,.2f}" for x in recent_data['Gold_USD']],
+        'BTC in Gold oz': [f"{x:.3f}" for x in recent_data['BTC_in_Gold']],
+        'Days Since Genesis': [f"{int(x):,}" for x in recent_data['Days']]
+    })
+    
+    st.dataframe(display_data, use_container_width=True)
 
 # Explanation
 st.markdown("""
@@ -223,10 +230,10 @@ for label, date in future_dates:
     future_days = (date - genesis).days
     future_fair_value = fair_value(future_days)
     projection_data.append({
-        'Date': label,
+        'Timeline': label,
         'Days Since Genesis': f"{future_days:,}",
         'Projected BTC in Gold oz': f"{future_fair_value:.3f}",
-        'BTC Value (at $3,400/oz gold)': f"${future_fair_value * 3400:,.0f}"
+        'Est. BTC Value (at $3,400/oz)': f"${future_fair_value * 3400:,.0f}"
     })
 
 projections_df = pd.DataFrame(projection_data)
