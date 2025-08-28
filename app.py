@@ -5,94 +5,165 @@ import numpy as np
 from scipy.stats import linregress
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
+import warnings
+warnings.filterwarnings('ignore')
 
 # Genesis block date
 genesis = datetime(2009, 1, 3)
 
 st.title('Bitcoin Power Law Dashboard in Terms of Gold')
 
-# Current market data (August 7, 2025)
-current_btc_usd = 116343  # From search results
-current_gold_usd = 3372.89  # From search results 
+# Function to get current market data
+@st.cache_data(ttl=3600)  # Cache for 1 hour
+def get_current_prices():
+    """Get current BTC and Gold prices with fallback options"""
+    try:
+        # Try to get current prices
+        btc_ticker = yf.Ticker("BTC-USD")
+        gold_ticker = yf.Ticker("GC=F")
+        
+        btc_info = btc_ticker.history(period="1d")
+        gold_info = gold_ticker.history(period="1d")
+        
+        if not btc_info.empty and not gold_info.empty:
+            current_btc = float(btc_info['Close'].iloc[-1])
+            current_gold = float(gold_info['Close'].iloc[-1])
+            return current_btc, current_gold, "Live data"
+        else:
+            raise ValueError("Empty data returned")
+            
+    except Exception as e:
+        st.warning(f"Could not fetch live prices: {e}")
+        # Fallback to recent approximate values
+        return 58000.0, 2500.0, "Fallback data"
 
 # Fetch historical data
 @st.cache_data(ttl=3600)  # Cache for 1 hour
 def fetch_data():
-    # BTC data (starts ~2014 in yfinance)
-    btc = yf.download('BTC-USD', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)
-    if isinstance(btc.columns, pd.MultiIndex):
-        btc.columns = btc.columns.get_level_values(0)  # Flatten MultiIndex if present
-    
-    # Gold futures (per oz in USD)
-    gold = yf.download('GC=F', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)
-    if isinstance(gold.columns, pd.MultiIndex):
-        gold.columns = gold.columns.get_level_values(0)  # Flatten MultiIndex if present
-    
-    # Align dates and compute BTC in gold oz
-    df = pd.DataFrame({'BTC_USD': btc['Close'], 'Gold_USD': gold['Close']}).dropna()
-    df['BTC_in_Gold'] = df['BTC_USD'] / df['Gold_USD']
-    
-    # Days since genesis
-    df['Days'] = (df.index - genesis).days
-    
-    # Add current data point manually to ensure we have today's values
-    current_date = datetime.now().date()
-    current_days = (datetime.now() - genesis).days
-    current_btc_gold = current_btc_usd / current_gold_usd
-    
-    # Add current row if not already present
-    if current_date not in df.index.date:
-        new_row = pd.DataFrame({
-            'BTC_USD': [current_btc_usd],
-            'Gold_USD': [current_gold_usd], 
-            'BTC_in_Gold': [current_btc_gold],
-            'Days': [current_days]
-        }, index=[current_date])
-        df = pd.concat([df, new_row])
-    
-    return df
+    """Fetch historical BTC and Gold data"""
+    try:
+        # Get current prices first
+        current_btc_usd, current_gold_usd, data_source = get_current_prices()
+        
+        # BTC data (starts ~2014 in yfinance)
+        btc = yf.download('BTC-USD', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)
+        if btc.empty:
+            raise ValueError("No BTC data retrieved")
+            
+        if isinstance(btc.columns, pd.MultiIndex):
+            btc.columns = btc.columns.get_level_values(0)  # Flatten MultiIndex if present
+        
+        # Gold futures (per oz in USD)
+        gold = yf.download('GC=F', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)
+        if gold.empty:
+            raise ValueError("No Gold data retrieved")
+            
+        if isinstance(gold.columns, pd.MultiIndex):
+            gold.columns = gold.columns.get_level_values(0)  # Flatten MultiIndex if present
+        
+        # Align dates and compute BTC in gold oz
+        df = pd.DataFrame({'BTC_USD': btc['Close'], 'Gold_USD': gold['Close']}).dropna()
+        
+        if df.empty:
+            raise ValueError("No aligned data after merging BTC and Gold")
+            
+        df['BTC_in_Gold'] = df['BTC_USD'] / df['Gold_USD']
+        
+        # Days since genesis
+        df['Days'] = (df.index - genesis).days
+        
+        # Add current data point manually to ensure we have today's values
+        current_date = datetime.now().date()
+        current_days = (datetime.now() - genesis).days
+        current_btc_gold = current_btc_usd / current_gold_usd
+        
+        # Add current row if not already present
+        if current_date not in df.index.date:
+            new_row = pd.DataFrame({
+                'BTC_USD': [current_btc_usd],
+                'Gold_USD': [current_gold_usd], 
+                'BTC_in_Gold': [current_btc_gold],
+                'Days': [current_days]
+            }, index=[pd.Timestamp(current_date)])
+            df = pd.concat([df, new_row])
+        
+        return df, current_btc_usd, current_gold_usd, data_source
+        
+    except Exception as e:
+        st.error(f"Error fetching historical data: {e}")
+        st.info("Creating synthetic data for demonstration...")
+        
+        # Fallback to synthetic data creation
+        current_btc_usd, current_gold_usd, data_source = get_current_prices()
+        current_date = datetime.now()
+        current_days = (current_date - genesis).days
+        current_btc_gold = current_btc_usd / current_gold_usd
+        
+        # Create realistic synthetic historical data
+        start_date = datetime(2014, 1, 1)
+        end_date = current_date
+        dates = pd.date_range(start=start_date, end=end_date, freq='D')
+        
+        # Generate realistic BTC price evolution (exponential growth with volatility)
+        days_from_start = np.arange(len(dates))
+        btc_trend = 300 * np.exp(days_from_start * 0.002)  # Exponential base trend
+        btc_noise = np.random.normal(1, 0.3, len(dates))  # Volatility
+        btc_prices = btc_trend * btc_noise
+        btc_prices = np.maximum(btc_prices, 100)  # Minimum price floor
+        
+        # Generate realistic gold price evolution (more stable)
+        gold_trend = 1200 + days_from_start * 0.3  # Linear trend
+        gold_noise = np.random.normal(1, 0.1, len(dates))  # Lower volatility
+        gold_prices = gold_trend * gold_noise
+        gold_prices = np.maximum(gold_prices, 800)  # Minimum price floor
+        
+        df = pd.DataFrame({
+            'BTC_USD': btc_prices,
+            'Gold_USD': gold_prices,
+            'Days': [(d - genesis).days for d in dates]
+        }, index=dates)
+        df['BTC_in_Gold'] = df['BTC_USD'] / df['Gold_USD']
+        
+        # Ensure current values are included
+        df.loc[current_date] = [current_btc_usd, current_gold_usd, current_btc_gold, current_days]
+        
+        return df, current_btc_usd, current_gold_usd, data_source + " (with synthetic historical data)"
 
+# Load data
 try:
-    df = fetch_data()
+    df, current_btc_usd, current_gold_usd, data_source = fetch_data()
+    st.success(f"Data loaded successfully! Source: {data_source}")
 except Exception as e:
-    st.error(f"Error fetching data: {e}")
-    st.info("Using current market data for calculations...")
-    # Fallback to manual data creation with current values
+    st.error(f"Critical error loading data: {e}")
+    st.stop()
+
+# Fit power law: log(price) = log(A) + B * log(days)
+try:
+    df_fit = df[(df['Days'] > 0) & (df['BTC_in_Gold'] > 0)].copy()
+    if len(df_fit) < 10:
+        st.warning("Limited data points for fitting. Results may be unreliable.")
+    
+    log_days = np.log(df_fit['Days'])
+    log_price = np.log(df_fit['BTC_in_Gold'])
+    slope, intercept, r_value, p_value, std_err = linregress(log_days, log_price)
+    
+    # Fair value function
+    def fair_value(days):
+        return np.exp(intercept) * days ** slope
+    
+    # Current calculations
     current_date = datetime.now()
     current_days = (current_date - genesis).days
     current_btc_gold = current_btc_usd / current_gold_usd
+    current_fair = fair_value(current_days)
+    valuation = (current_btc_gold - current_fair) / current_fair * 100
     
-    # Create minimal dataframe for demonstration
-    dates = pd.date_range(start='2014-01-01', end=current_date.strftime('%Y-%m-%d'), freq='M')
-    df = pd.DataFrame({
-        'BTC_USD': np.random.lognormal(8, 1, len(dates)),
-        'Gold_USD': np.random.normal(2500, 500, len(dates)),
-        'Days': [(d - genesis).days for d in dates]
-    }, index=dates)
-    df['BTC_in_Gold'] = df['BTC_USD'] / df['Gold_USD']
-    
-    # Ensure current values are included
-    df.loc[current_date] = [current_btc_usd, current_gold_usd, current_btc_gold, current_days]
-
-# Fit power law: log(price) = log(A) + B * log(days)
-df_fit = df[(df['Days'] > 0) & (df['BTC_in_Gold'] > 0)].copy()
-log_days = np.log(df_fit['Days'])
-log_price = np.log(df_fit['BTC_in_Gold'])
-slope, intercept, r_value, p_value, std_err = linregress(log_days, log_price)
-
-# Fair value function
-def fair_value(days):
-    return np.exp(intercept) * days ** slope
-
-# Current calculations
-current_date = datetime.now()
-current_days = (current_date - genesis).days
-current_btc_gold = current_btc_usd / current_gold_usd
-current_fair = fair_value(current_days)
-valuation = (current_btc_gold - current_fair) / current_fair * 100
+except Exception as e:
+    st.error(f"Error fitting power law model: {e}")
+    st.stop()
 
 # Display key metrics with updated values
-st.markdown("### Current Market Data (August 7, 2025)")
+st.markdown(f"### Current Market Data ({current_date.strftime('%B %d, %Y')})")
 col1, col2, col3, col4 = st.columns(4)
 col1.metric("Current BTC (USD)", f"${current_btc_usd:,.0f}")
 col2.metric("Current Gold/oz (USD)", f"${current_gold_usd:,.2f}")
@@ -129,22 +200,25 @@ fig.add_trace(go.Scatter(
 ))
 
 # Power law fit line (extend 5 years into future)
-fit_days = np.arange(max(1, df['Days'].min()), current_days + 365 * 5)
-fit_price = fair_value(fit_days)
-fig.add_trace(go.Scatter(
-    x=fit_days, 
-    y=fit_price, 
-    mode='lines', 
-    name='Power Law Fit', 
-    line=dict(color='red', dash='dash', width=2)
-))
+try:
+    fit_days = np.arange(max(1, df['Days'].min()), current_days + 365 * 5)
+    fit_price = fair_value(fit_days)
+    fig.add_trace(go.Scatter(
+        x=fit_days, 
+        y=fit_price, 
+        mode='lines', 
+        name='Power Law Fit', 
+        line=dict(color='red', dash='dash', width=2)
+    ))
+except Exception as e:
+    st.warning(f"Could not create projection line: {e}")
 
 # Current point (highlighted)
 fig.add_trace(go.Scatter(
     x=[current_days], 
     y=[current_btc_gold], 
     mode='markers', 
-    name='Current (Aug 7, 2025)', 
+    name=f'Current ({current_date.strftime("%b %d, %Y")})', 
     marker=dict(color='green', size=12, symbol='star')
 ))
 
@@ -174,7 +248,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader('Market Context')
 btc_gold_ratio = current_btc_usd / current_gold_usd
 st.write(f"""
-**Current Market Snapshot (August 7, 2025):**
+**Current Market Snapshot ({current_date.strftime('%B %d, %Y')}):**
 - Bitcoin: **${current_btc_usd:,}** USD
 - Gold: **${current_gold_usd:.2f}** USD per ounce  
 - **1 Bitcoin = {btc_gold_ratio:.3f} ounces of gold**
@@ -187,16 +261,13 @@ if len(df) >= 10:
     st.subheader('Recent Data')
     recent_data = df.tail(10)[['BTC_USD', 'Gold_USD', 'BTC_in_Gold', 'Days']].copy()
     
-    # Create a clean dataframe for display with proper data types
+    # Create a clean dataframe for display
     try:
-        # Try to format dates properly
         if hasattr(recent_data.index, 'strftime'):
             date_strings = recent_data.index.strftime('%Y-%m-%d')
         else:
-            # Fallback for different index types
             date_strings = [str(date)[:10] for date in recent_data.index]
     except:
-        # Final fallback - use index as is but convert to string
         date_strings = [str(date) for date in recent_data.index]
     
     display_data = pd.DataFrame({
@@ -208,57 +279,58 @@ if len(df) >= 10:
     })
     
     st.dataframe(display_data, use_container_width=True)
-else:
-    st.subheader('Current Data Point')
-    # Show just the current values if we don't have enough historical data
-    current_data = pd.DataFrame({
-        'Date': [datetime.now().strftime('%Y-%m-%d')],
-        'BTC (USD)': [f"${current_btc_usd:,.0f}"],
-        'Gold (USD/oz)': [f"${current_gold_usd:,.2f}"],
-        'BTC in Gold oz': [f"{current_btc_gold:.3f}"],
-        'Days Since Genesis': [f"{current_days:,}"]
-    })
-    st.dataframe(current_data, use_container_width=True)
 
 # Explanation
-st.markdown("""
+st.markdown(f"""
 ### How This Works
 - **Bitcoin Power Law in Gold Terms**: Models BTC's value in ounces of gold as a power law function of time: `BTC_in_Gold ≈ A × days^B`
-- **Data Sources**: Yahoo Finance for BTC-USD and gold futures (GC=F), supplemented with current market data
+- **Data Sources**: Yahoo Finance for BTC-USD and gold futures (GC=F), with live price updates
 - **Genesis Reference**: January 3, 2009 - the date Bitcoin's genesis block was mined
-- **Current Status**: As of August 7, 2025, Bitcoin has been active for **{:,} days** ({:.1f} years)
-- **Power Law Exponent (B)**: {:.3f} - indicates the rate of growth in the BTC/Gold ratio over time
+- **Current Status**: As of {current_date.strftime('%B %d, %Y')}, Bitcoin has been active for **{current_days:,} days** ({years_since_genesis:.1f} years)
+- **Power Law Exponent (B)**: {slope:.3f} - indicates the rate of growth in the BTC/Gold ratio over time
 - **Model Interpretation**: 
   - **Positive valuation** = Bitcoin is expensive relative to gold based on historical trends
   - **Negative valuation** = Bitcoin is cheap relative to gold based on historical trends
-  - **R² = {:.3f}** indicates how well the power law fits the historical data
+  - **R² = {r_value**2:.3f}** indicates how well the power law fits the historical data
 
-### Key Observations for 2025
-- Gold has reached new highs above $3,300/oz, driven by economic uncertainty and potential Fed rate cuts
-- Bitcoin continues its long-term upward trajectory against gold, currently at **{:.3f}** gold ounces per BTC
-- The power law model suggests this relationship has maintained its predictive power over Bitcoin's 16+ year history
-""".format(current_days, years_since_genesis, slope, r_value**2, current_btc_gold))
+### Key Observations
+- The power law model has maintained its predictive power over Bitcoin's {years_since_genesis:.0f}+ year history
+- Current BTC/Gold ratio: **{current_btc_gold:.3f}** gold ounces per BTC
+- Long-term trend shows Bitcoin's value relative to gold continues to follow the power law relationship
+""")
 
 # Future projections
 st.subheader('Future Projections')
-future_dates = [
-    ('End of 2025', datetime(2025, 12, 31)),
-    ('End of 2026', datetime(2026, 12, 31)),
-    ('End of 2030', datetime(2030, 12, 31))
-]
+try:
+    future_dates = [
+        ('End of 2025', datetime(2025, 12, 31)),
+        ('End of 2026', datetime(2026, 12, 31)),
+        ('End of 2030', datetime(2030, 12, 31))
+    ]
 
-projection_data = []
-for label, date in future_dates:
-    future_days = (date - genesis).days
-    future_fair_value = fair_value(future_days)
-    projection_data.append({
-        'Timeline': label,
-        'Days Since Genesis': f"{future_days:,}",
-        'Projected BTC in Gold oz': f"{future_fair_value:.3f}",
-        'Est. BTC Value (at $3,400/oz)': f"${future_fair_value * 3400:,.0f}"
-    })
+    projection_data = []
+    for label, date in future_dates:
+        future_days = (date - genesis).days
+        future_fair_value = fair_value(future_days)
+        projection_data.append({
+            'Timeline': label,
+            'Days Since Genesis': f"{future_days:,}",
+            'Projected BTC in Gold oz': f"{future_fair_value:.3f}",
+            'Est. BTC Value (at current gold)': f"${future_fair_value * current_gold_usd:,.0f}"
+        })
 
-projections_df = pd.DataFrame(projection_data)
-st.table(projections_df)
+    projections_df = pd.DataFrame(projection_data)
+    st.table(projections_df)
 
-st.caption("*Projections assume the power law relationship continues and use $3,400/oz as reference gold price*")
+    st.caption(f"*Projections assume the power law relationship continues and use ${current_gold_usd:,.0f}/oz as reference gold price*")
+except Exception as e:
+    st.warning(f"Could not generate projections: {e}")
+
+# Add debug info in sidebar
+with st.sidebar:
+    st.header("Debug Information")
+    st.write(f"Data points: {len(df)}")
+    st.write(f"Date range: {df.index.min().strftime('%Y-%m-%d')} to {df.index.max().strftime('%Y-%m-%d')}")
+    st.write(f"R-squared: {r_value**2:.4f}")
+    st.write(f"P-value: {p_value:.6f}")
+    st.write(f"Standard error: {std_err:.6f}")
