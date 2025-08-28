@@ -13,71 +13,122 @@ genesis = datetime(2009, 1, 3)
 
 st.title('Bitcoin Power Law Dashboard in Terms of Gold')
 
-# Function to get current market data
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+# Function to get current market data with better rate limit handling
+@st.cache_data(ttl=14400)  # Cache for 4 hours to reduce API calls
 def get_current_prices():
-    """Get current BTC and Gold prices with fallback options"""
+    """Get current BTC and Gold prices with fallback options and rate limit handling"""
+    
+    # First try with reasonable fallback values based on recent market conditions
+    fallback_btc = 58000.0  # Reasonable BTC price
+    fallback_gold = 2500.0  # Reasonable gold price
+    
     try:
-        # Try to get current prices
-        btc_ticker = yf.Ticker("BTC-USD")
-        gold_ticker = yf.Ticker("GC=F")
+        # Add delay and retry logic for rate limiting
+        import time
         
-        btc_info = btc_ticker.history(period="1d")
-        gold_info = gold_ticker.history(period="1d")
+        # Try to get BTC price first
+        try:
+            btc_ticker = yf.Ticker("BTC-USD")
+            btc_info = btc_ticker.history(period="1d", interval="1d")
+            time.sleep(1)  # Add delay between requests
+            
+            if not btc_info.empty:
+                current_btc = float(btc_info['Close'].iloc[-1])
+            else:
+                current_btc = fallback_btc
+        except:
+            current_btc = fallback_btc
         
-        if not btc_info.empty and not gold_info.empty:
-            current_btc = float(btc_info['Close'].iloc[-1])
-            current_gold = float(gold_info['Close'].iloc[-1])
-            return current_btc, current_gold, "Live data"
+        # Try to get Gold price
+        try:
+            gold_ticker = yf.Ticker("GC=F")
+            gold_info = gold_ticker.history(period="1d", interval="1d")
+            time.sleep(1)  # Add delay between requests
+            
+            if not gold_info.empty:
+                current_gold = float(gold_info['Close'].iloc[-1])
+            else:
+                current_gold = fallback_gold
+        except:
+            current_gold = fallback_gold
+        
+        # Determine data source
+        if current_btc != fallback_btc or current_gold != fallback_gold:
+            return current_btc, current_gold, "Live data (partial or full)"
         else:
-            raise ValueError("Empty data returned")
+            return current_btc, current_gold, "Fallback data (rate limited)"
             
     except Exception as e:
-        st.warning(f"Could not fetch live prices: {e}")
-        # Fallback to recent approximate values
-        return 58000.0, 2500.0, "Fallback data"
+        st.info(f"Using fallback prices due to API limits: {e}")
+        return fallback_btc, fallback_gold, "Fallback data (API limited)"
 
-# Fetch historical data
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+# Fetch historical data with better rate limiting
+@st.cache_data(ttl=14400)  # Cache for 4 hours to reduce API calls
 def fetch_data():
-    """Fetch historical BTC and Gold data"""
+    """Fetch historical BTC and Gold data with improved rate limiting"""
+    import time
+    
     try:
         # Get current prices first
         current_btc_usd, current_gold_usd, data_source = get_current_prices()
         
-        # BTC data (starts ~2014 in yfinance)
-        btc = yf.download('BTC-USD', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)
-        if btc.empty:
-            raise ValueError("No BTC data retrieved")
-            
-        if isinstance(btc.columns, pd.MultiIndex):
-            btc.columns = btc.columns.get_level_values(0)  # Flatten MultiIndex if present
+        # Add delays between API calls to avoid rate limits
+        st.info("Fetching historical data... (this may take a moment)")
         
-        # Gold futures (per oz in USD)
-        gold = yf.download('GC=F', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), progress=False)
-        if gold.empty:
-            raise ValueError("No Gold data retrieved")
+        # BTC data with retry logic
+        btc_data = None
+        for attempt in range(3):  # Try 3 times
+            try:
+                btc_data = yf.download('BTC-USD', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'), 
+                                    progress=False, auto_adjust=True, prepost=False)
+                time.sleep(2)  # Wait between attempts
+                if not btc_data.empty:
+                    break
+            except Exception as e:
+                if attempt == 2:  # Last attempt
+                    st.warning(f"Failed to fetch BTC data after 3 attempts: {e}")
+                time.sleep(5)  # Wait longer between retries
+        
+        if btc_data is None or btc_data.empty:
+            raise ValueError("Could not fetch BTC data")
             
-        if isinstance(gold.columns, pd.MultiIndex):
-            gold.columns = gold.columns.get_level_values(0)  # Flatten MultiIndex if present
+        # Gold data with retry logic  
+        gold_data = None
+        for attempt in range(3):  # Try 3 times
+            try:
+                gold_data = yf.download('GC=F', start='2014-01-01', end=datetime.now().strftime('%Y-%m-%d'),
+                                      progress=False, auto_adjust=True, prepost=False)
+                time.sleep(2)  # Wait between attempts
+                if not gold_data.empty:
+                    break
+            except Exception as e:
+                if attempt == 2:  # Last attempt
+                    st.warning(f"Failed to fetch Gold data after 3 attempts: {e}")
+                time.sleep(5)  # Wait longer between retries
+                
+        if gold_data is None or gold_data.empty:
+            raise ValueError("Could not fetch Gold data")
+        
+        # Process the data
+        if isinstance(btc_data.columns, pd.MultiIndex):
+            btc_data.columns = btc_data.columns.get_level_values(0)
+        if isinstance(gold_data.columns, pd.MultiIndex):
+            gold_data.columns = gold_data.columns.get_level_values(0)
         
         # Align dates and compute BTC in gold oz
-        df = pd.DataFrame({'BTC_USD': btc['Close'], 'Gold_USD': gold['Close']}).dropna()
+        df = pd.DataFrame({'BTC_USD': btc_data['Close'], 'Gold_USD': gold_data['Close']}).dropna()
         
         if df.empty:
             raise ValueError("No aligned data after merging BTC and Gold")
             
         df['BTC_in_Gold'] = df['BTC_USD'] / df['Gold_USD']
-        
-        # Days since genesis
         df['Days'] = (df.index - genesis).days
         
-        # Add current data point manually to ensure we have today's values
+        # Add current data point
         current_date = datetime.now().date()
         current_days = (datetime.now() - genesis).days
         current_btc_gold = current_btc_usd / current_gold_usd
         
-        # Add current row if not already present
         if current_date not in df.index.date:
             new_row = pd.DataFrame({
                 'BTC_USD': [current_btc_usd],
@@ -87,35 +138,53 @@ def fetch_data():
             }, index=[pd.Timestamp(current_date)])
             df = pd.concat([df, new_row])
         
-        return df, current_btc_usd, current_gold_usd, data_source
+        return df, current_btc_usd, current_gold_usd, f"{data_source} + Historical data"
         
     except Exception as e:
         st.error(f"Error fetching historical data: {e}")
-        st.info("Creating synthetic data for demonstration...")
+        st.info("Using synthetic data for demonstration due to API rate limits...")
         
-        # Fallback to synthetic data creation
+        # Create more realistic fallback data
         current_btc_usd, current_gold_usd, data_source = get_current_prices()
-        current_date = datetime.now()
-        current_days = (current_date - genesis).days
-        current_btc_gold = current_btc_usd / current_gold_usd
         
-        # Create realistic synthetic historical data
+        # Generate synthetic historical data that matches realistic patterns
+        end_date = datetime.now()
         start_date = datetime(2014, 1, 1)
-        end_date = current_date
         dates = pd.date_range(start=start_date, end=end_date, freq='D')
         
-        # Generate realistic BTC price evolution (exponential growth with volatility)
-        days_from_start = np.arange(len(dates))
-        btc_trend = 300 * np.exp(days_from_start * 0.002)  # Exponential base trend
-        btc_noise = np.random.normal(1, 0.3, len(dates))  # Volatility
-        btc_prices = btc_trend * btc_noise
-        btc_prices = np.maximum(btc_prices, 100)  # Minimum price floor
+        # More realistic BTC price evolution based on historical patterns
+        days_elapsed = np.arange(len(dates))
         
-        # Generate realistic gold price evolution (more stable)
-        gold_trend = 1200 + days_from_start * 0.3  # Linear trend
-        gold_noise = np.random.normal(1, 0.1, len(dates))  # Lower volatility
-        gold_prices = gold_trend * gold_noise
-        gold_prices = np.maximum(gold_prices, 800)  # Minimum price floor
+        # BTC: Exponential growth with major corrections and halvings
+        btc_base_trend = 400 * np.exp(days_elapsed * 0.0018)  # Base exponential growth
+        
+        # Add halving effects (roughly every 4 years)
+        halving_dates = [datetime(2016, 7, 9), datetime(2020, 5, 11), datetime(2024, 4, 19)]
+        halving_boosts = []
+        for date in dates:
+            boost = 1.0
+            for halving in halving_dates:
+                days_since_halving = (date - halving).days
+                if days_since_halving > 0:
+                    # Gradual boost after halving, peaks around 12-18 months later
+                    boost *= 1.0 + 0.5 * np.exp(-((days_since_halving - 400) / 200) ** 2)
+            halving_boosts.append(boost)
+        
+        halving_boosts = np.array(halving_boosts)
+        
+        # Add volatility and corrections
+        volatility = np.random.normal(1, 0.4, len(dates))
+        corrections = np.where(np.random.random(len(dates)) < 0.02, 0.5, 1.0)  # 2% chance of 50% correction
+        
+        btc_prices = btc_base_trend * halving_boosts * volatility * corrections
+        btc_prices = np.maximum(btc_prices, 200)  # Floor price
+        
+        # Gold: More stable with gradual upward trend
+        gold_base = 1200
+        gold_trend = gold_base + days_elapsed * 0.25  # Slower growth
+        gold_volatility = np.random.normal(1, 0.08, len(dates))  # Lower volatility
+        gold_prices = gold_trend * gold_volatility
+        gold_prices = np.maximum(gold_prices, 800)
         
         df = pd.DataFrame({
             'BTC_USD': btc_prices,
@@ -124,10 +193,10 @@ def fetch_data():
         }, index=dates)
         df['BTC_in_Gold'] = df['BTC_USD'] / df['Gold_USD']
         
-        # Ensure current values are included
-        df.loc[current_date] = [current_btc_usd, current_gold_usd, current_btc_gold, current_days]
+        # Ensure current values are reasonable
+        df.loc[end_date] = [current_btc_usd, current_gold_usd, current_btc_usd/current_gold_usd, (end_date - genesis).days]
         
-        return df, current_btc_usd, current_gold_usd, data_source + " (with synthetic historical data)"
+        return df, current_btc_usd, current_gold_usd, f"{data_source} + Synthetic historical data"
 
 # Load data
 try:
